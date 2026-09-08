@@ -1,0 +1,19 @@
+name: Schedule Test
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print test message
+        run: |
+          echo "================================"
+          echo "GitHub Actions 定时任务触发成功！"
+          echo "当前 UTC 时间：$(date -u)"
+          echo "当前北京时间：$(date '+%Y-%m-%d %H:%M:%S')"
+          echo "================================"
