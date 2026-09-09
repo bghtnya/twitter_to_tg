@@ -1,6 +1,7 @@
 import os
 import json
 import html
+import asyncio
 import logging
 import re
 
@@ -12,42 +13,33 @@ from telegram.constants import ParseMode
 
 
 # ============================================================
-# 配置
-# ============================================================
-
-NITTER_INSTANCES = [
-    "https://nitter.cf",
-]
-
-TWITTER_USERS = [
-    "bghtnya",
-]
-
-# True = 第一次运行时也发送 RSS 中已有的推文
-# 建议第一次测试时改成 False
-SEND_STARTUP_HISTORY = False
-
-SEND_IMAGES = True
-
-# 最多保存多少条 Tweet ID
-MAX_SENT_IDS = 500
-
-# Nitter 请求超时时间
-REQUEST_TIMEOUT = 30
-
-
-# ============================================================
-# 文件
+# 文件路径
 # ============================================================
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
 
+CONFIG_FILE = os.path.join(
+    BASE_DIR,
+    "config.json"
+)
+
 SENT_FILE = os.path.join(
     BASE_DIR,
     "sent.json"
 )
+
+
+# ============================================================
+# Nitter 实例
+# ============================================================
+
+NITTER_INSTANCES = [
+
+    "https://nitter.cf",
+
+]
 
 
 # ============================================================
@@ -104,12 +96,42 @@ session.headers.update({
 
 
 # ============================================================
-# sent.json
+# 读取配置
+# ============================================================
+
+def load_config():
+
+    if not os.path.exists(
+        CONFIG_FILE
+    ):
+
+        logger.error(
+            "找不到 config.json"
+        )
+
+        raise FileNotFoundError(
+            CONFIG_FILE
+        )
+
+
+    with open(
+        CONFIG_FILE,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
+        return json.load(f)
+
+
+# ============================================================
+# 已发送记录
 # ============================================================
 
 def load_sent():
 
-    if not os.path.exists(SENT_FILE):
+    if not os.path.exists(
+        SENT_FILE
+    ):
 
         return {}
 
@@ -122,15 +144,7 @@ def load_sent():
             encoding="utf-8"
         ) as f:
 
-            data = json.load(f)
-
-
-        if not isinstance(data, dict):
-
-            return {}
-
-
-        return data
+            return json.load(f)
 
 
     except Exception as e:
@@ -174,6 +188,8 @@ def clean_html(text):
         return ""
 
 
+    # br 转换换行
+
     text = re.sub(
 
         r"<br\s*/?>",
@@ -186,6 +202,8 @@ def clean_html(text):
 
     )
 
+
+    # p 转换换行
 
     text = re.sub(
 
@@ -200,6 +218,8 @@ def clean_html(text):
     )
 
 
+    # 删除 HTML 标签
+
     text = re.sub(
 
         r"<[^>]+>",
@@ -211,12 +231,9 @@ def clean_html(text):
     )
 
 
-    text = html.unescape(
+    return html.unescape(
         text
-    )
-
-
-    return text.strip()
+    ).strip()
 
 
 # ============================================================
@@ -269,7 +286,32 @@ def extract_images(entry):
         )
 
 
-        if url:
+        media_type = enclosure.get(
+
+            "type",
+
+            ""
+
+        )
+
+
+        if (
+
+            url
+
+            and
+
+            (
+
+                "image" in media_type
+
+                or
+
+                media_type == ""
+
+            )
+
+        ):
 
             images.append(
                 url
@@ -302,7 +344,9 @@ def extract_images(entry):
 
     for url in image_urls:
 
-        if url.startswith("/"):
+        if url.startswith(
+            "/"
+        ):
 
             url = (
                 "https://nitter.cf"
@@ -319,16 +363,13 @@ def extract_images(entry):
     # 去重
     # --------------------------------------------------------
 
-    result = []
+    return list(
 
-    for url in images:
+        dict.fromkeys(
+            images
+        )
 
-        if url not in result:
-
-            result.append(url)
-
-
-    return result
+    )
 
 
 # ============================================================
@@ -363,8 +404,6 @@ def get_tweet_id(entry):
     )
 
 
-    # RSS ID 里面寻找数字
-
     match = re.search(
 
         r"(\d{10,})",
@@ -379,6 +418,8 @@ def get_tweet_id(entry):
         return match.group(1)
 
 
+    # 最后备用
+
     return str(
         entry_id or link
     )
@@ -388,7 +429,7 @@ def get_tweet_id(entry):
 # 获取 Nitter RSS
 # ============================================================
 
-def fetch_tweets(username):
+def get_tweets(username):
 
     for instance in NITTER_INSTANCES:
 
@@ -398,18 +439,18 @@ def fetch_tweets(username):
         )
 
 
-        logger.info(
-            f"[Nitter] 获取：{url}"
-        )
-
-
         try:
+
+            logger.info(
+                f"[Nitter] 获取：{url}"
+            )
+
 
             response = session.get(
 
                 url,
 
-                timeout=REQUEST_TIMEOUT
+                timeout=30
 
             )
 
@@ -424,14 +465,24 @@ def fetch_tweets(username):
 
             if response.status_code != 200:
 
-                logger.warning(
-
-                    f"[Nitter] HTTP "
-                    f"{response.status_code}"
-
-                )
-
                 continue
+
+
+            content_type = response.headers.get(
+
+                "Content-Type",
+
+                ""
+
+            )
+
+
+            logger.info(
+
+                f"[Nitter] Content-Type: "
+                f"{content_type}"
+
+            )
 
 
             feed = feedparser.parse(
@@ -441,11 +492,14 @@ def fetch_tweets(username):
             )
 
 
+            # 检查 RSS 是否有错误
+
             if feed.bozo:
 
                 logger.warning(
 
                     "[Nitter] RSS解析警告："
+
                     f"{feed.bozo_exception}"
 
                 )
@@ -455,6 +509,14 @@ def fetch_tweets(username):
 
                 logger.warning(
                     "[Nitter] RSS 没有推文"
+                )
+
+                logger.warning(
+
+                    "[Nitter] 返回内容前200字符："
+
+                    f"{response.text[:200]}"
+
                 )
 
                 continue
@@ -514,21 +576,17 @@ def fetch_tweets(username):
                     )
 
 
-                    # ------------------------------------------------
-                    # Nitter URL → X URL
-                    # ------------------------------------------------
+                    # Nitter 链接改成 X 链接
 
-                    if link:
+                    link = re.sub(
 
-                        link = re.sub(
+                        r"https?://[^/]+",
 
-                            r"https?://[^/]+",
+                        "https://x.com",
 
-                            "https://x.com",
+                        link
 
-                            link
-
-                        )
+                    )
 
 
                     images = extract_images(
@@ -546,12 +604,7 @@ def fetch_tweets(username):
 
                         "url": link,
 
-                        "images": images,
-
-                        "published": entry.get(
-                            "published",
-                            ""
-                        )
+                        "images": images
 
                     })
 
@@ -560,7 +613,7 @@ def fetch_tweets(username):
 
                     logger.warning(
 
-                        f"[Nitter] "
+                        "[Nitter] "
                         f"解析推文失败：{e}"
 
                     )
@@ -570,7 +623,8 @@ def fetch_tweets(username):
 
                 logger.info(
 
-                    f"[Nitter] 成功获取 "
+                    "[Nitter] "
+                    f"成功获取 "
                     f"{len(tweets)} 条推文"
 
                 )
@@ -582,14 +636,15 @@ def fetch_tweets(username):
 
             logger.warning(
 
-                f"[Nitter] 请求失败：{e}"
+                "[Nitter] 请求失败："
+                f"{e}"
 
             )
 
 
     logger.error(
 
-        f"[Nitter] 所有实例失败："
+        "[Nitter] 所有实例失败："
         f"@{username}"
 
     )
@@ -598,30 +653,7 @@ def fetch_tweets(username):
 
 
 # ============================================================
-# 按 Tweet ID 排序
-# ============================================================
-
-def sort_tweets(tweets):
-
-    try:
-
-        return sorted(
-
-            tweets,
-
-            key=lambda x: int(
-                x["id"]
-            )
-
-        )
-
-    except Exception:
-
-        return tweets
-
-
-# ============================================================
-# 构造 Telegram 消息
+# 构建 Telegram 消息
 # ============================================================
 
 def build_message(tweet):
@@ -634,7 +666,7 @@ def build_message(tweet):
     text = tweet.get(
         "text",
         ""
-    ).strip()
+    )
 
 
     url = tweet.get(
@@ -656,29 +688,25 @@ def build_message(tweet):
 
             "\n\n"
 
-            + html.escape(
-                text
-            )
+            f"{html.escape(text)}"
 
         )
 
 
-    if url:
+    message += (
 
-        message += (
+        "\n\n🔗 "
 
-            "\n\n🔗 "
+        f'<a href="{html.escape(url)}">'
 
-            f'<a href="{html.escape(url)}">'
+        "查看原推文"
 
-            "查看原推文"
+        "</a>"
 
-            "</a>"
-
-        )
+    )
 
 
-    # Telegram message 限制
+    # Telegram 最大 4096
 
     if len(message) > 4000:
 
@@ -719,7 +747,9 @@ async def send_tweet(
 
     chat_id,
 
-    tweet
+    tweet,
+
+    config
 
 ):
 
@@ -729,18 +759,37 @@ async def send_tweet(
 
 
     images = tweet.get(
+
         "images",
+
         []
+
     )
 
 
-    if SEND_IMAGES and images:
+    # --------------------------------------------------------
+    # 图片
+    # --------------------------------------------------------
+
+    if (
+
+        config.get(
+
+            "send_images",
+
+            True
+
+        )
+
+        and
+
+        images
+
+    ):
 
         try:
 
-            # ------------------------------------------------
-            # 单张图片
-            # ------------------------------------------------
+            # 单图
 
             if len(images) == 1:
 
@@ -757,9 +806,7 @@ async def send_tweet(
                 )
 
 
-            # ------------------------------------------------
-            # 多张图片
-            # ------------------------------------------------
+            # 多图
 
             else:
 
@@ -812,7 +859,7 @@ async def send_tweet(
 
             logger.info(
 
-                f"图片推送成功："
+                f"图片发送成功："
                 f"{tweet['id']}"
 
             )
@@ -829,8 +876,8 @@ async def send_tweet(
 
             )
 
-            logger.warning(
-                "尝试发送纯文字"
+            logger.info(
+                "改为文字发送"
             )
 
 
@@ -853,7 +900,7 @@ async def send_tweet(
 
     logger.info(
 
-        f"文字推送成功："
+        f"文字发送成功："
         f"{tweet['id']}"
 
     )
@@ -866,28 +913,29 @@ async def send_tweet(
 # 检查用户
 # ============================================================
 
-async def process_user(
+async def check_user(
 
     bot,
 
-    chat_id,
-
     username,
+
+    config,
 
     sent
 
 ):
 
     logger.info(
-        "=" * 60
+        "=" * 55
     )
+
 
     logger.info(
         f"检查 @{username}"
     )
 
 
-    tweets = fetch_tweets(
+    tweets = get_tweets(
         username
     )
 
@@ -895,43 +943,52 @@ async def process_user(
     if not tweets:
 
         logger.warning(
-
-            f"@{username} "
-            "没有获取到推文"
-
+            f"没有获取到 @{username} 的推文"
         )
 
         return
 
 
-    tweets = sort_tweets(
-        tweets
-    )
+    # --------------------------------------------------------
+    # RSS 最新通常在前
+    #
+    # Snowflake ID 排序更可靠
+    # --------------------------------------------------------
 
+    try:
 
-    old_ids = set(
+        tweets.sort(
 
-        sent.get(
-
-            username,
-
-            []
+            key=lambda x: int(
+                x["id"]
+            )
 
         )
 
-    )
+
+    except Exception:
+
+        tweets.reverse()
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # 第一次运行
-    # ========================================================
+    # --------------------------------------------------------
 
     if username not in sent:
 
         sent[username] = []
 
 
-        if not SEND_STARTUP_HISTORY:
+        # 默认不发送历史
+
+        if not config.get(
+
+            "send_startup_history",
+
+            False
+
+        ):
 
             for tweet in tweets:
 
@@ -950,7 +1007,7 @@ async def process_user(
 
                 )
 
-            )[-MAX_SENT_IDS:]
+            )[-500:]
 
 
             save_sent(
@@ -960,36 +1017,48 @@ async def process_user(
 
             logger.info(
 
-                f"首次运行："
+                "首次运行："
+
                 f"已记录 {len(tweets)} 条历史推文"
 
             )
 
-            logger.info(
-                "本次不发送历史推文"
-            )
 
             return
 
 
-    # ========================================================
-    # 找新推文
-    # ========================================================
+    # --------------------------------------------------------
+    # 已发送
+    # --------------------------------------------------------
+
+    old_ids = set(
+
+        sent.get(
+
+            username,
+
+            []
+
+        )
+
+    )
+
 
     new_tweets = []
 
 
     for tweet in tweets:
 
-        tweet_id = tweet["id"]
-
-
-        if tweet_id not in old_ids:
+        if tweet["id"] not in old_ids:
 
             new_tweets.append(
                 tweet
             )
 
+
+    # --------------------------------------------------------
+    # 没有新推文
+    # --------------------------------------------------------
 
     if not new_tweets:
 
@@ -1002,15 +1071,15 @@ async def process_user(
 
     logger.info(
 
-        f"发现 {len(new_tweets)} "
-        "条新推文"
+        f"发现 "
+        f"{len(new_tweets)} 条新推文"
 
     )
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # 发送
-    # ========================================================
+    # --------------------------------------------------------
 
     for tweet in new_tweets:
 
@@ -1020,9 +1089,13 @@ async def process_user(
 
                 bot,
 
-                chat_id,
+                config[
+                    "telegram_chat_id"
+                ],
 
-                tweet
+                tweet,
+
+                config
 
             )
 
@@ -1045,6 +1118,8 @@ async def process_user(
                 )
 
 
+                # 保留最近500条
+
                 sent[username] = list(
 
                     dict.fromkeys(
@@ -1053,7 +1128,7 @@ async def process_user(
 
                     )
 
-                )[-MAX_SENT_IDS:]
+                )[-500:]
 
 
                 save_sent(
@@ -1061,12 +1136,18 @@ async def process_user(
                 )
 
 
+            # 多条推文之间间隔 1 秒
+
+            await asyncio.sleep(
+                1
+            )
+
+
         except Exception as e:
 
             logger.exception(
 
-                f"发送 Tweet "
-                f"{tweet['id']} 失败：{e}"
+                f"发送失败：{e}"
 
             )
 
@@ -1077,61 +1158,82 @@ async def process_user(
 
 async def main():
 
-    logger.info(
-        "=" * 60
+    print()
+
+    print(
+        "=" * 65
     )
 
-    logger.info(
-        "X / Twitter → Telegram"
+    print(
+        "       X / Twitter → Telegram 自动同步器"
     )
 
-    logger.info(
-        "GitHub Actions 版本"
+    print(
+        "       Nitter RSS 版本"
     )
 
-    logger.info(
-        "=" * 60
+    print(
+        "       单次运行模式"
     )
 
-
-    # --------------------------------------------------------
-    # GitHub Secrets
-    # --------------------------------------------------------
-
-    bot_token = os.getenv(
-        "TELEGRAM_BOT_TOKEN"
+    print(
+        "=" * 65
     )
 
+    print()
 
-    chat_id = os.getenv(
-        "TELEGRAM_CHAT_ID"
+
+    # ========================================================
+    # 读取配置
+    # ========================================================
+
+    config = load_config()
+
+
+    bot_token = config.get(
+
+        "telegram_bot_token",
+
+        ""
+
     )
 
 
     if not bot_token:
 
-        raise RuntimeError(
-
-            "缺少 TELEGRAM_BOT_TOKEN"
-
+        logger.error(
+            "没有填写 Bot Token"
         )
 
+        return
 
-    if not chat_id:
 
-        raise RuntimeError(
+    users = config.get(
 
-            "缺少 TELEGRAM_CHAT_ID"
+        "twitter_users",
 
+        []
+
+    )
+
+
+    if not users:
+
+        logger.error(
+            "没有设置 Twitter 用户"
         )
 
+        return
 
-    # --------------------------------------------------------
-    # Telegram
-    # --------------------------------------------------------
+
+    # ========================================================
+    # Telegram Bot
+    # ========================================================
 
     bot = Bot(
+
         token=bot_token
+
     )
 
 
@@ -1142,7 +1244,8 @@ async def main():
 
         logger.info(
 
-            f"Telegram Bot 已连接："
+            "Telegram Bot 已连接："
+
             f"@{me.username}"
 
         )
@@ -1152,63 +1255,91 @@ async def main():
 
         logger.error(
 
-            f"Telegram Bot 连接失败："
-            f"{e}"
+            f"Telegram 连接失败：{e}"
 
         )
 
-        raise
+        return
 
 
-    # --------------------------------------------------------
-    # sent.json
-    # --------------------------------------------------------
+    # ========================================================
+    # 已发送记录
+    # ========================================================
 
     sent = load_sent()
 
 
-    # --------------------------------------------------------
-    # 检查所有用户
-    # --------------------------------------------------------
+    logger.info(
 
-    for username in TWITTER_USERS:
+        f"监控用户：{users}"
 
-        username = username.strip()
-        username = username.lstrip("@")
+    )
 
-        await process_user(
 
-            bot,
+    # ========================================================
+    # 单次执行
+    # ========================================================
 
-            chat_id,
+    try:
 
-            username,
+        for username in users:
 
-            sent
+            username = username.strip()
+
+            username = username.lstrip("@")
+
+            if not username:
+
+                continue
+
+
+            await check_user(
+
+                bot,
+
+                username,
+
+                config,
+
+                sent
+
+            )
+
+
+            # 多个用户之间间隔 2 秒
+
+            await asyncio.sleep(
+                2
+            )
+
+
+        logger.info(
+            "=" * 55
+        )
+
+        logger.info(
+            "本次检查完成，程序退出"
+        )
+
+        logger.info(
+            "=" * 55
+        )
+
+
+    except Exception as e:
+
+        logger.exception(
+
+            f"本次检查发生错误：{e}"
 
         )
 
 
-    logger.info(
-        "=" * 60
-    )
-
-    logger.info(
-        "本次检查完成"
-    )
-
-    logger.info(
-        "=" * 60
-    )
-
-
 # ============================================================
-# 入口
+# 程序入口
 # ============================================================
 
 if __name__ == "__main__":
-
-    import asyncio
 
     try:
 
@@ -1216,10 +1347,8 @@ if __name__ == "__main__":
             main()
         )
 
-    except Exception as e:
+    except KeyboardInterrupt:
 
-        logger.exception(
-            f"程序失败：{e}"
+        print(
+            "\n程序已退出"
         )
-
-        raise

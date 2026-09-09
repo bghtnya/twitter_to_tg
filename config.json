@@ -1,0 +1,20 @@
+{
+    "telegram_bot_token": "114514:xxx",
+    "telegram_chat_id": "@???",
+
+    "twitter_users": [
+        "bghtnya"
+    ],
+
+    "check_interval": 300,
+
+    "send_images": true,
+
+    "send_link": true,
+
+    "include_retweets": true,
+
+    "include_replies": false,
+
+    "send_startup_history": true
+}
